@@ -1,0 +1,107 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: resilience4j-demo
+
+  datasource:
+    url: jdbc:postgresql://localhost:5433/order_db
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 3000     # fail fast if no connection in 3s
+      idle-timeout: 600000
+
+  jpa:
+    hibernate:
+      ddl-auto: update             # auto creates/updates tables
+    show-sql: true
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+
+# Actuator — exposes health + metrics endpoints
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, metrics, prometheus, info
+  endpoint:
+    health:
+      show-details: always
+  health:
+    circuitbreakers:
+      enabled: true
+    ratelimiters:
+      enabled: true
+    bulkheads:
+      enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}  # tags all metrics with app name
+    distribution:
+      percentiles-histogram:
+        resilience4j.circuitbreaker.calls: true  # enables latency histograms
+
+payment:
+  api:
+    base-url: https://jsonplaceholder.typicode.com
+
+# Resilience4j — we'll fill these in as we add each pattern
+resilience4j:
+  circuitbreaker:
+    instances:
+      paymentApi:
+        registerHealthIndicator: true   # shows up in /actuator/health
+        slidingWindowSize: 10
+        failureRateThreshold: 50        # open CB after 50% failures
+        waitDurationInOpenState: 10s
+        permittedNumberOfCallsInHalfOpenState: 3
+        automaticTransitionFromOpenToHalfOpenEnabled: true
+        recordExceptions:
+          - java.io.IOException
+          - java.util.concurrent.TimeoutException
+          - org.springframework.web.client.ResourceAccessException
+
+  ratelimiter:
+    instances:
+      paymentApi:
+        registerHealthIndicator: true
+        limitForPeriod: 5          # only 5 calls allowed per refresh period
+        limitRefreshPeriod: 1m     # refresh the permit count every 1 minute
+        timeoutDuration: 5s        # how long a request waits for a permit before rejection
+
+  retry:
+    instances:
+      paymentApi:
+        maxAttempts: 3                # total attempts including the first one
+        waitDuration: 1000            # wait 1s before first retry
+        enableExponentialBackoff: true
+        exponentialBackoffMultiplier: 2  # attempt 1→1s, attempt 2→2s, attempt 3→4s
+        retryExceptions:
+          - java.io.IOException
+          - org.springframework.web.client.ResourceAccessException
+          - java.util.concurrent.TimeoutException
+        ignoreExceptions:
+          # Don't retry when circuit is open — pointless
+          - io.github.resilience4j.circuitbreaker.CallNotPermittedException
+
+  timelimiter:
+    instances:
+      paymentApi:
+        timeoutDuration: 3s           # cancel call if it takes longer than 3s
+        cancelRunningFuture: true
+
+  spring:
+    permits:
+      aspects:
+        circuitBreakerAspectOrder: 1
+        retryAspectOrder: 2
+        timeLimiterAspectOrder: 3
+        rateLimiterAspectOrder: 4
+        bulkheadAspectOrder: 5
